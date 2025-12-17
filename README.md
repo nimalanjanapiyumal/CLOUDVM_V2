@@ -1,43 +1,71 @@
-# Hybrid SDN Load Balancing (2-VM Deployment)
+# Hybrid SDN Load Balancer (2-VM) — GitHub-ready bundle
 
-This repository contains **two deployment artifacts (ZIPs)** and **two single-file Python runbooks**:
+This repo is designed for a **2 VM** deployment:
 
-- **VM1 (Controller VM)**: `vm1_controller_project.zip` + `runbook_vm1_controller.py`
-  - Ryu SDN controller (OpenFlow 1.3)
-  - Hybrid RR + GA load balancer
-  - Flow rule management to steer VIP traffic
-  - Monitoring loop + Prometheus metrics + REST API
-  - Optional Prometheus+Grafana via Docker (for visualization)
+- **VM1 (Controller VM)**: Ryu SDN controller + Hybrid RR/GA load balancer + Prometheus metrics + optional Grafana/Prometheus via Docker.
+- **VM2 (Data Plane VM)**: Mininet + OVS + 1 client host + 3 backend hosts + traffic generators.
 
-- **VM2 (Data Plane VM)**: `vm2_dataplane_project.zip` + `runbook_vm2_dataplane.py`
-  - Mininet topology + OVS switch
-  - Demo backend servers (HTTP port 8080, iperf3 port 5201)
-  - Optional traffic generation from Mininet client
+## Files you will find in the repo
 
-## Quick run (Ubuntu 22.04)
+- `vm1_controller_project.zip` — VM1 controller project (code + config + requirements)
+- `vm2_dataplane_project.zip` — VM2 dataplane project (Mininet topology + tools)
+- `runbook_vm1_setup.py` — VM1 setup (APT + venv + pip install; fixes Ryu/setuptools issue)
+- `runbook_vm1_run.py` — VM1 run (starts controller + discovery API)
+- `runbook_vm2_setup.py` — VM2 setup (APT install Mininet/OVS/iperf3)
+- `runbook_vm2_run.py` — VM2 run (starts Mininet topology + optional load)
 
-VM1 (Controller VM):
+---
+
+## VM1 (Controller) — Setup + Run
+
+### Setup (run once)
 ```bash
-python3 runbook_vm1_controller.py --with-grafana
+sudo -E python3 runbook_vm1_setup.py
 ```
 
-VM2 (Data Plane VM):
+### Run (keeps running until Ctrl+C)
 ```bash
-sudo -E python3 runbook_vm2_dataplane.py --start-load --cli
+sudo -E python3 runbook_vm1_run.py --with-grafana
 ```
 
-The VM2 runbook will attempt controller auto-discovery by scanning the local /24 network for the controller REST endpoint.
-If your network is not /24, provide the controller IP explicitly:
+VM1 ports:
+- OpenFlow: `6653/tcp`
+- Discovery API: `8080/tcp`
+- Prometheus metrics: `9100/tcp`
+- Optional: Grafana `3000/tcp`, Prometheus UI `9090/tcp`
+
+---
+
+## VM2 (Data Plane) — Setup + Run
+
+### Setup (run once)
 ```bash
-sudo -E CONTROLLER_IP=<VM1_IP> python3 runbook_vm2_dataplane.py --start-load --cli
+sudo -E python3 runbook_vm2_setup.py
 ```
 
-## Endpoints
+### Run simulation
+Auto-discovers controller by scanning the local /24 for `http://<ip>:8080/discover`:
 
-On VM1 after start:
-- REST: `http://<VM1_IP>:8080/status`
-- Discover: `http://<VM1_IP>:8080/discover`
-- Metrics: `http://<VM1_IP>:9100/metrics`
-- (Optional) Grafana: `http://<VM1_IP>:3000` (admin/admin)
-- (Optional) Prometheus: `http://<VM1_IP>:9090`
+```bash
+sudo -E python3 runbook_vm2_run.py --start-load --cli
+```
 
+If discovery is blocked, specify controller explicitly:
+```bash
+sudo -E python3 runbook_vm2_run.py --controller-ip <VM1_IP> --start-load --cli
+```
+
+---
+
+## Important note on multiple NICs / OpenStack interfaces
+
+If VM1 has multiple NICs (for example: management + internal network), set the advertised IP:
+```bash
+sudo -E python3 runbook_vm1_run.py --advertise-ip <VM1_INTERNAL_IP>
+```
+
+Or set it via environment:
+```bash
+export ADVERTISE_IP=<VM1_INTERNAL_IP>
+sudo -E python3 runbook_vm1_run.py
+```
