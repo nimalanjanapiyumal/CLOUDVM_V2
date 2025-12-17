@@ -1,5 +1,19 @@
-\
 #!/usr/bin/env python3
+"""VM1 (Controller) - Setup runbook
+
+What this does (Ubuntu 22.04):
+  1) Installs OS packages (python venv tooling, build deps, git)
+  2) Extracts vm1_controller_project.zip into .deploy/vm1_controller/app
+  3) Creates a venv at .deploy/vm1_controller/.venv
+  4) Installs Python requirements (OS-Ken + metrics + yaml)
+
+Run:
+  sudo -E python3 runbook_vm1_setup.py
+
+Optional:
+  sudo -E python3 runbook_vm1_setup.py --with-grafana
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -11,13 +25,16 @@ import time
 import zipfile
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parent
 ZIP_NAME = "vm1_controller_project.zip"
 DEPLOY_DIR = REPO_ROOT / ".deploy" / "vm1_controller"
 APP_DIR = DEPLOY_DIR / "app"
 CONF_DIR = DEPLOY_DIR / "config"
 VENV_DIR = DEPLOY_DIR / ".venv"
+
+
+def is_root() -> bool:
+    return hasattr(os, "geteuid") and os.geteuid() == 0
 
 
 def run(cmd: list[str], *, check: bool = True, cwd: Path | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -34,14 +51,11 @@ def run(cmd: list[str], *, check: bool = True, cwd: Path | None = None, env: dic
     return p
 
 
-def is_root() -> bool:
-    return hasattr(os, "geteuid") and os.geteuid() == 0
-
-
-def apt_install(pkgs: list[str], *, max_wait_sec: int = 900) -> None:
-    """Install apt packages with automatic lock handling (unattended-upgrades)."""
+def apt_install(pkgs: list[str], *, max_wait_sec: int = 1200) -> None:
+    """Install apt packages with lock handling (unattended-upgrades)."""
     env = os.environ.copy()
     env["DEBIAN_FRONTEND"] = "noninteractive"
+
     start = time.time()
     while True:
         try:
@@ -49,31 +63,71 @@ def apt_install(pkgs: list[str], *, max_wait_sec: int = 900) -> None:
             run(["apt-get", "install", "-y"] + pkgs, env=env)
             return
         except subprocess.CalledProcessError as e:
-            out = e.output or ""
-            lock_err = ("Could not get lock" in out) or ("Unable to acquire the dpkg frontend lock" in out) or ("is held by process" in out)
+            out = (e.output or "").strip()
+            lock_err = (
+                "Could not get lock" in out
+                or "Unable to acquire the dpkg frontend lock" in out
+                or "is held by process" in out
+                or "dpkg frontend lock" in out
+            )
             if lock_err:
                 waited = int(time.time() - start)
                 if waited >= max_wait_sec:
-                    print("\n[vm1-setup] ERROR: APT lock is held too long. This is usually unattended-upgrades.\n"
-                          "Wait until it finishes and re-run this setup runbook.\n")
+                    print(
+                        "\n[vm1-setup] ERROR: APT lock held too long (usually unattended-upgrades).\n"
+                        "Let unattended-upgrades finish, then re-run this runbook.\n"
+                    )
                     print(out)
                     raise
-                print(f"[vm1-setup] APT lock detected (likely unattended-upgrades). Waiting 10s and retrying... ({waited}s elapsed)")
+                print(f"[vm1-setup] APT lock detected. Waiting 10s and retrying... ({waited}s elapsed)")
                 time.sleep(10)
                 continue
+
+            # Non-lock error
             print(out)
             raise
 
 
-def ensure_venv(python_bin: str) -> Path:
+def extract_zip() -> None:
+    zip_path = REPO_ROOT / ZIP_NAME
+    if not zip_path.exists():
+        raise FileNotFoundError(f"Missing {ZIP_NAME} in repo root: {zip_path}")
+
+    if APP_DIR.exists():
+        shutil.rmtree(APP_DIR)
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(zip_path, "r") as z:
+        z.extractall(APP_DIR)
+
+
+def copy_default_config() -> None:
+    """Copy the default config from the project zip into .deploy/config."""
+    CONF_DIR.mkdir(parents=True, exist_ok=True)
+    src = APP_DIR / "config" / "default.yaml"
+    dst = CONF_DIR / "default.yaml"
+    if src.exists():
+        dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    else:
+        dst.write_text(
+            "controller:\n  of_listen_port: 6653\n  rest_port: 8080\n  metrics_port: 9100\n"
+            "vip:\n  ip: '10.0.0.100'\n  mac: '00:00:00:00:00:64'\n",
+            encoding="utf-8",
+        )
+
+
+def ensure_venv(python_bin: str = "python3") -> None:
     if VENV_DIR.exists():
-        return VENV_DIR
+        return
     run([python_bin, "-m", "venv", str(VENV_DIR)])
-    return VENV_DIR
 
 
 def venv_python() -> str:
     return str(VENV_DIR / "bin" / "python")
+
+
+def venv_bin(name: str) -> str:
+    return str(VENV_DIR / "bin" / name)
 
 
 def pip_install(args: list[str]) -> None:
@@ -82,45 +136,32 @@ def pip_install(args: list[str]) -> None:
     try:
         run(cmd)
     except subprocess.CalledProcessError as e:
-        print(e.output)
+        print(e.output or "")
         raise
 
 
-def extract_zip() -> None:
-    zip_path = REPO_ROOT / ZIP_NAME
-    if not zip_path.exists():
-        raise FileNotFoundError(f"Missing {ZIP_NAME} in repo root: {zip_path}")
-    if APP_DIR.exists():
-        shutil.rmtree(APP_DIR)
-    APP_DIR.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path, "r") as z:
-        z.extractall(APP_DIR)
-
-
-def copy_default_config() -> None:
-    CONF_DIR.mkdir(parents=True, exist_ok=True)
-    src = APP_DIR / "config" / "default.yaml"
-    dst = CONF_DIR / "default.yaml"
-    if src.exists():
-        dst.write_text(src.read_text(), encoding="utf-8")
-    else:
-        # fallback: create minimal
-        dst.write_text("vip:\n  ip: \"10.0.0.100\"\n", encoding="utf-8")
-
-
-def main():
-    ap = argparse.ArgumentParser(description="VM1 setup: installs deps + creates venv + installs Ryu safely.")
-    ap.add_argument("--with-grafana", action="store_true", help="Also install Docker + docker-compose (optional).")
+def main() -> None:
+    ap = argparse.ArgumentParser(description="VM1 setup (controller): install deps + venv + OS-Ken + project")
+    ap.add_argument("--with-grafana", action="store_true", help="Also install Docker + Compose for Grafana/Prometheus.")
     args = ap.parse_args()
 
     if not is_root():
         print("[vm1-setup] Please run as root:\n  sudo -E python3 runbook_vm1_setup.py")
-        sys.exit(1)
+        raise SystemExit(1)
 
     (REPO_ROOT / ".deploy").mkdir(exist_ok=True)
 
-    print("[vm1-setup] Installing OS dependencies (with APT lock handling)...")
-    pkgs = ["python3-venv", "python3-pip", "python3-dev", "build-essential", "libssl-dev", "libffi-dev", "git"]
+    print("[vm1-setup] Installing OS dependencies (APT lock-safe)...")
+    pkgs = [
+        "python3-venv",
+        "python3-pip",
+        "python3-dev",
+        "build-essential",
+        "libssl-dev",
+        "libffi-dev",
+        "git",
+        "curl",
+    ]
     if args.with_grafana:
         pkgs += ["docker.io", "docker-compose"]
     apt_install(pkgs)
@@ -133,28 +174,27 @@ def main():
     print("[vm1-setup] Creating venv...")
     ensure_venv("python3")
 
-    print("[vm1-setup] Upgrading pip + pinning build tooling (fixes Ryu build on Ubuntu 22 / Python 3.10)...")
-    pip_install(["install", "--upgrade", "pip"])
-    # Critical pins: newer setuptools breaks Ryu 4.34 build hooks.
-    pip_install(["install", "--upgrade", "setuptools==65.5.1", "wheel==0.41.3"])
+    print("[vm1-setup] Upgrading pip tooling...")
+    pip_install(["install", "--upgrade", "pip", "setuptools", "wheel"])
 
     req = APP_DIR / "requirements.txt"
     if not req.exists():
         raise FileNotFoundError(f"Missing requirements.txt inside zip at {req}")
 
-    print("[vm1-setup] Installing Python requirements with --no-build-isolation...")
-    try:
-        pip_install(["install", "--no-build-isolation", "-r", str(req)])
-    except Exception:
-        # fallback: disable pep517 for ryu in case build backend changes
-        print("[vm1-setup] Retry with --no-use-pep517 for Ryu...")
-        pip_install(["install", "--no-build-isolation", "--no-use-pep517", "ryu==4.34"])
-        pip_install(["install", "--no-build-isolation", "-r", str(req)])
+    print("[vm1-setup] Installing Python requirements...")
+    pip_install(["install", "-r", str(req)])
+
+    # Sanity check
+    osken_mgr = Path(venv_bin("osken-manager"))
+    if not osken_mgr.exists():
+        print("\n[vm1-setup] WARNING: osken-manager was not found in the venv.")
+        print("           Try:  .deploy/vm1_controller/.venv/bin/python -m pip show os-ken")
+        print("           If missing, re-run this setup or check your internet/proxy.")
+    else:
+        print(f"[vm1-setup] Found controller executable: {osken_mgr}")
 
     print("\n[vm1-setup] DONE ✅")
     print(f"Next: sudo -E python3 {REPO_ROOT/'runbook_vm1_run.py'}")
-    if args.with_grafana:
-        print("Grafana/Prometheus will be started by the run runbook with --with-grafana.")
 
 
 if __name__ == "__main__":
