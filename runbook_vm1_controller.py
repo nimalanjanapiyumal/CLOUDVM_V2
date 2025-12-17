@@ -70,19 +70,25 @@ def extract_zip(zip_path: Path, dest_dir: Path) -> None:
 def ensure_venv(proj_dir: Path) -> Path:
     venv_dir = proj_dir / ".venv"
     python_bin = venv_dir / "bin" / "python"
-    if python_bin.exists():
-        return python_bin
+    if not python_bin.exists():
+        print(f"[runbook:vm1] Creating venv: {venv_dir}", flush=True)
+        run([sys.executable, "-m", "venv", str(venv_dir)])
 
-    print(f"[runbook:vm1] Creating venv: {venv_dir}", flush=True)
-    run([sys.executable, "-m", "venv", str(venv_dir)])
-
-    # Upgrade pip
-    run([str(python_bin), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
+    # Always (re)pin build tooling inside the venv so rerunning the runbook fixes
+    # partially-broken installs.
+    #
+    # The error you hit:
+    #   AttributeError: 'types.SimpleNamespace' object has no attribute 'get_script_args'
+    # comes from newer setuptools versions that effectively remove/disable easy_install
+    # internals that Ryu 4.34 still imports during build.
+    run([str(python_bin), "-m", "pip", "install", "--upgrade", "pip"])
+    run([str(python_bin), "-m", "pip", "install", "--upgrade", "setuptools==65.5.1", "wheel==0.41.3"])
     return python_bin
 
 
 def pip_install(python_bin: Path, requirements: Path) -> None:
-    run([str(python_bin), "-m", "pip", "install", "-r", str(requirements)])
+    # Disable build isolation so Ryu builds against the pinned setuptools in this venv.
+    run([str(python_bin), "-m", "pip", "install", "--no-build-isolation", "-r", str(requirements)])
 
 
 def get_primary_ip() -> str:
