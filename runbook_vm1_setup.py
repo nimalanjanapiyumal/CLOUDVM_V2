@@ -130,6 +130,41 @@ def venv_bin(name: str) -> str:
     return str(VENV_DIR / "bin" / name)
 
 
+def ensure_osken_manager_wrapper() -> None:
+    """Ensure an executable named 'osken-manager' exists in the venv.
+
+    In some environments the console_script wrapper may not be generated even if
+    the 'os-ken' package is installed. OS-Ken can always be launched via:
+        <venv>/bin/python -m os_ken.cmd.manager
+
+    This function creates a small wrapper script at:
+        <venv>/bin/osken-manager
+    when missing.
+    """
+
+    osken_mgr = Path(venv_bin("osken-manager"))
+    if osken_mgr.exists():
+        return
+
+    py = venv_python()
+
+    # Verify os_ken is importable inside the venv before creating the wrapper.
+    try:
+        run([py, "-c", "import os_ken"], check=True)
+    except Exception:
+        return
+
+    wrapper = f"""#!{py}
+import runpy
+
+if __name__ == '__main__':
+    # Execute OS-Ken's manager module as if 'osken-manager' was invoked.
+    runpy.run_module('os_ken.cmd.manager', run_name='__main__')
+"""
+    osken_mgr.write_text(wrapper, encoding="utf-8")
+    os.chmod(osken_mgr, 0o755)
+
+
 def pip_install(args: list[str]) -> None:
     py = venv_python()
     cmd = [py, "-m", "pip"] + args
@@ -184,6 +219,9 @@ def main() -> None:
     print("[vm1-setup] Installing Python requirements...")
     pip_install(["install", "-r", str(req)])
 
+    # Make sure we can run the controller even if console scripts were not generated.
+    ensure_osken_manager_wrapper()
+
     # Sanity check
     osken_mgr = Path(venv_bin("osken-manager"))
     if not osken_mgr.exists():
@@ -193,7 +231,7 @@ def main() -> None:
     else:
         print(f"[vm1-setup] Found controller executable: {osken_mgr}")
 
-    print("\n[vm1-setup] DONE ✅")
+    print("\n[vm1-setup] DONE")
     print(f"Next: sudo -E python3 {REPO_ROOT/'runbook_vm1_run.py'}")
 
 

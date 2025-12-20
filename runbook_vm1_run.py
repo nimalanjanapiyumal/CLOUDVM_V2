@@ -45,6 +45,10 @@ def venv_bin(name: str) -> str:
     return str(VENV_DIR / "bin" / name)
 
 
+def venv_python() -> str:
+    return venv_bin("python")
+
+
 def _parse_ip_addrs() -> list[tuple[str, str, int]]:
     """Return list of (iface, ip, prefixlen) for global IPv4 addresses."""
     try:
@@ -187,13 +191,17 @@ def main() -> None:
     env["HYBRID_LB_CONFIG"] = str(CONF_PATH)
 
     osken_mgr = Path(venv_bin("osken-manager"))
-    if not osken_mgr.exists():
-        print("[vm1-run] osken-manager not found in venv. Re-run setup:")
-        print("  sudo -E python3 runbook_vm1_setup.py")
-        raise SystemExit(1)
+    # In some environments the console_script wrapper is missing even when os-ken is installed.
+    # We can always launch the manager via `python -m os_ken.cmd.manager`.
+    mgr_prefix: list[str]
+    if osken_mgr.exists():
+        mgr_prefix = [str(osken_mgr)]
+    else:
+        mgr_prefix = [venv_python(), "-m", "os_ken.cmd.manager"]
+        print("[vm1-run] WARNING: osken-manager script not found; using python -m os_ken.cmd.manager instead.")
 
     cmd = [
-        str(osken_mgr),
+        *mgr_prefix,
         "--ofp-listen-host",
         "0.0.0.0",
         "--ofp-tcp-listen-port",
